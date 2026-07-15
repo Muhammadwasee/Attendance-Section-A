@@ -54,6 +54,7 @@
   .session-select-row button{flex:0 0 auto; width:auto; padding:9px 14px; margin-top:0; font-size:12px;}
 </style>
 <base target="_blank">
+<base target="_blank">
 </head>
 <body>
 
@@ -116,7 +117,7 @@ function getDeviceId() {
 
 function isTypingNow() {
   const a = document.activeElement;
-  return a && a.tagName === "INPUT";
+  return a && (a.tagName === "INPUT" || a.tagName === "SELECT");
 }
 
 async function apiGet() {
@@ -140,7 +141,18 @@ async function initialLoad() {
 
 async function backgroundRefresh() {
   if (isTypingNow()) return;
-  try { const fresh = await apiGet(); state = fresh; render(); } catch (e) {}
+  try {
+    const fresh = await apiGet();
+    // Only re-render if session status or roster actually changed
+    const sessionChanged = JSON.stringify(state.sessionConfig) !== JSON.stringify(fresh.sessionConfig);
+    const rosterChanged = state.roster.length !== fresh.roster.length ||
+      JSON.stringify(state.roster.map(s => s.id)) !== JSON.stringify(fresh.roster.map(s => s.id));
+    const logChanged = JSON.stringify(state.attendanceLog) !== JSON.stringify(fresh.attendanceLog);
+    if (sessionChanged || rosterChanged || logChanged) {
+      state = fresh;
+      render();
+    }
+  } catch (e) {}
 }
 
 function getPosition() {
