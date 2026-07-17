@@ -20,6 +20,7 @@
   h2{display:flex; align-items:center; gap:8px; font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--accent); margin:0 0 8px;}
   p.hint{font-size:11px; color:var(--muted); margin:6px 0 0;}
   select, input{width:100%; background:var(--bg); border:1px solid rgba(255,255,255,.4); border-radius:6px; padding:9px; color:var(--cream); font-size:14px; margin-top:6px;}
+  select:disabled{opacity:.4;}
   button.action{width:100%; margin-top:12px; padding:12px; border:none; border-radius:6px; text-transform:uppercase; letter-spacing:.05em; font-size:14px; cursor:pointer; transition:opacity .2s;}
   button.action:disabled{opacity:.4; cursor:not-allowed;}
   button.gold{background:var(--accent); color:#1A1A1A; font-weight:700;}
@@ -29,6 +30,7 @@
   button.blue{background:var(--blue); color:#1A1A1A; font-weight:700;}
   .row{display:flex; gap:8px; margin-top:8px;}
   .row input{margin-top:0;}
+  .row button{margin-top:0;}
   .roster-item{display:flex; justify-content:space-between; align-items:center; font-size:14px; padding:6px 0; border-bottom:1px solid rgba(255,255,255,.1);}
   .roster-item button{background:none; border:none; color:var(--red); font-size:12px; cursor:pointer;}
   .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
@@ -52,6 +54,9 @@
   .session-select-row{display:flex; gap:8px; margin-top:8px; align-items:flex-end;}
   .session-select-row select{flex:1; margin-top:0;}
   .session-select-row button{flex:0 0 auto; width:auto; padding:9px 14px; margin-top:0; font-size:12px;}
+  .field-label{font-size:11px; text-transform:uppercase; color:rgba(245,245,245,.6); display:block; margin-top:8px;}
+  .status-line{display:flex; align-items:center; justify-content:space-between; margin-top:10px;}
+  .status-badge{font-weight:700; text-transform:uppercase; letter-spacing:.05em; font-size:12px;}
 </style>
 <base target="_blank">
 <base target="_blank">
@@ -62,7 +67,7 @@
 
 <script>
 /* ============ SETUP: paste your Apps Script Web App URL here ============ */
-const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzGGFdhRresZ8UtHnAqDL1MImOFaX7FAjQrfUs-t5djQYVbbzYCE08-ds3Ya4qRUytw/exec";
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzRbedWsfgYOGq8KzLFFlYFx3umqrVQg8Q2L2YAHWXTCscAhrhRHJHtXeaDFHtiB4YG/exec";
 /* ========================================================================= */
 
 function defaultState() {
@@ -95,6 +100,11 @@ let newName = "";
 let crPinValue = "";
 let deleteSheets = false;
 let selectedSessionId = "";
+
+/* Manual attendance edit (CR override) selections */
+let manualSubject = "";
+let manualSessionId = "";
+let manualStudentId = "";
 
 /* ─────────── Device ID: One Device = One Attendance ─────────── */
 
@@ -298,6 +308,18 @@ async function undoLastRemoval() {
   busy = false; render();
 }
 
+/* ─────────── Manual Attendance Edit (CR override, any session open or closed) ─────────── */
+
+async function manualMarkAttendance(mode) {
+  if (!manualSessionId) { stamp = { type: "err", text: "Select a session first" }; render(); return; }
+  if (!manualStudentId) { stamp = { type: "err", text: "Select a student first" }; render(); return; }
+  busy = true; render();
+  const r = await apiPost("manualMarkAttendance", { sessionId: manualSessionId, studentId: manualStudentId, mode, pin: crPinValue });
+  if (r.error) stamp = { type: "err", text: r.error };
+  else { state = r.state; stamp = { type: "ok", text: mode === "add" ? "Marked present" : "Marked absent" }; }
+  busy = false; render();
+}
+
 function exportExcel(subject) {
   const sessions = state.sessionHistory.filter(h => h.subject === subject);
   const total = sessions.length || 1;
@@ -390,7 +412,7 @@ function render() {
       '<label style="font-size:11px;text-transform:uppercase;color:rgba(241,245,241,.6)">Your name</label>' +
       '<select id="studentSelect" onchange="studentId=this.value; render();">' +
         '<option value="">Select from roster</option>' +
-        state.roster.map(s => '<option value="' + escapeHtml(s.id) + '"' + (studentId === s.id ? ' selected' : '') + '>' + escapeHtml(s.id) + ' &mdash; ' + escapeHtml(s.name) + '</option>').join("") +
+        state.roster.map(s => '<option value="' + escapeHtml(s.id) + '"' + (studentId === s.id ? ' selected' : '') + '>' + escapeHtml(s.id) + ' -- ' + escapeHtml(s.name) + '</option>').join("") +
       '</select>' +
       '<p class="hint" id="studentStatusHint">' + (cfg.active ? (remainingLabel ? escapeHtml(cfg.subject) + ' &middot; <span id="timerText">' + remainingLabel + '</span> left' : 'Session closing...') : 'No session open right now') + '</p>' +
       '<button class="action gold" id="markBtn" ' + (canMark ? '' : 'disabled') + ' onclick="markAttendance()">' + (busy ? 'Checking location...' : 'Mark My Attendance') + '</button>' +
@@ -444,6 +466,9 @@ function render() {
         (state.roster.map(s => '<div class="roster-item"><span class="mono">' + escapeHtml(s.id) + '</span><span style="flex:1;padding:0 8px">' + escapeHtml(s.name) + '</span><button onclick="removeStudent(\'' + escapeHtml(s.id) + '\')">remove</button></div>').join('') || '<p class="hint">No students added yet.</p>') +
       '</div>' +
     '</section>';
+
+    // MANUAL ATTENDANCE EDIT (Subject -> Session -> Student, works even if session is closed)
+    html += renderManualAttendanceSection();
 
     html += '<section>' +
       '<h2>Attendance summary</h2>' +
@@ -508,6 +533,52 @@ function render() {
   app.innerHTML = html;
 }
 
+/* Renders the Subject -> Session -> Student manual override section.
+   Works for open OR closed sessions, since it just edits attendance records directly. */
+function renderManualAttendanceSection() {
+  // Keep selections valid against current state
+  if (manualSubject && state.subjects.indexOf(manualSubject) === -1) { manualSubject = ""; manualSessionId = ""; }
+  const sessionsForSubject = manualSubject ? state.sessionHistory.filter(h => h.subject === manualSubject) : [];
+  if (manualSessionId && !sessionsForSubject.some(h => h.sessionId === manualSessionId)) manualSessionId = "";
+
+  let html = '<section>' +
+    '<h2>Manual attendance edit</h2>' +
+    '<p class="hint">Add or remove a specific student\'s attendance for a specific session &mdash; works even after the class has closed.</p>' +
+
+    '<label class="field-label">1. Subject</label>' +
+    '<select onchange="manualSubject=this.value; manualSessionId=\'\'; manualStudentId=\'\'; render();">' +
+      '<option value="">Select subject...</option>' +
+      state.subjects.map(s => '<option value="' + escapeHtml(s) + '"' + (manualSubject === s ? ' selected' : '') + '>' + escapeHtml(s) + '</option>').join('') +
+    '</select>' +
+
+    '<label class="field-label">2. Session (date &amp; time)</label>' +
+    '<select ' + (!manualSubject ? 'disabled' : '') + ' onchange="manualSessionId=this.value; manualStudentId=\'\'; render();">' +
+      '<option value="">Select session...</option>' +
+      sessionsForSubject.map(h => '<option value="' + escapeHtml(h.sessionId) + '"' + (manualSessionId === h.sessionId ? ' selected' : '') + '>' + escapeHtml(fmtDateTime(h.startTime)) + (h.active ? ' (open)' : '') + '</option>').join('') +
+    '</select>' +
+
+    '<label class="field-label">3. Student</label>' +
+    '<select ' + (!manualSessionId ? 'disabled' : '') + ' onchange="manualStudentId=this.value; render();">' +
+      '<option value="">Select student...</option>' +
+      state.roster.map(s => '<option value="' + escapeHtml(s.id) + '"' + (manualStudentId === s.id ? ' selected' : '') + '>' + escapeHtml(s.id) + ' -- ' + escapeHtml(s.name) + '</option>').join('') +
+    '</select>';
+
+  if (manualSessionId && manualStudentId) {
+    const isPresent = (state.attendanceLog[manualSessionId] || []).some(r => r.studentId === manualStudentId);
+    html += '<div class="status-line">' +
+      '<span class="hint" style="margin:0">Current status</span>' +
+      '<span class="status-badge" style="color:' + (isPresent ? 'var(--green)' : 'var(--red)') + '">' + (isPresent ? 'PRESENT' : 'ABSENT') + '</span>' +
+    '</div>' +
+    '<div class="row">' +
+      '<button class="action gold" ' + (busy || isPresent ? 'disabled' : '') + ' onclick="manualMarkAttendance(\'add\')">Mark Present</button>' +
+      '<button class="action danger" ' + (busy || !isPresent ? 'disabled' : '') + ' onclick="manualMarkAttendance(\'remove\')">Mark Absent</button>' +
+    '</div>';
+  }
+
+  html += '</section>';
+  return html;
+}
+
 function renderSummary() {
   if (!summarySubject || state.subjects.indexOf(summarySubject) === -1) summarySubject = state.subjects[0];
   const sessions = state.sessionHistory.filter(h => h.subject === summarySubject);
@@ -553,6 +624,7 @@ window.changeCrPin = changeCrPin;
 window.removeData = removeData;
 window.removeSpecificSession = removeSpecificSession;
 window.undoLastRemoval = undoLastRemoval;
+window.manualMarkAttendance = manualMarkAttendance;
 
 initialLoad();
 setInterval(tick, 1000);
